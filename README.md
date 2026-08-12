@@ -1,3 +1,5 @@
+**English** | [Русский](README.ru.md)
+
 # sse-keepalive-proxy
 
 A local HTTP proxy between Claude Code and Anthropic-compatible gateways

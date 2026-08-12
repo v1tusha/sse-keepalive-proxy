@@ -1,3 +1,5 @@
+[English](README.md) | **Русский**
+
 # sse-keepalive-proxy
 
 Локальный HTTP-прокси между Claude Code и Anthropic-совместимыми шлюзами
