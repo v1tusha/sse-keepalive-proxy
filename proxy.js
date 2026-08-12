@@ -61,7 +61,7 @@ function shouldRetryStatus(status) {
   return status === 401 || status === 403 || status === 429 || (status >= 500 && status <= 599);
 }
 
-const RETRY_NO = /invalid|authentication|api[ _-]?key|expired|billing|quota|permission|denied|bad request|bad gateway upstream/i;
+const RETRY_NO = /authentication|api[ _-]?key|expired|billing|quota|permission|denied|bad request|missing|required|incorrect|not supported/i;
 const RETRY_OK = /unauthorized client detected|overloaded|too many|rate limit|internal|upstream|temporar|busy|unavailable/i;
 
 function isTransientBody(status, buf) {
@@ -175,7 +175,10 @@ const server = http.createServer((req, res) => {
           if (aborted) return;
           const buf = Buffer.concat(chunks, size);
           if (isTransientBody(status, buf)) {
-            log(`${req.method} ${reqPath} retry ${attempt}/${MAX_RETRIES} after ${status}: ${buf.toString('utf8').slice(0, 100)}`);
+            const snippet = buf.toString('utf8')
+              .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '?')
+              .slice(0, 100);
+            log(`${req.method} ${reqPath} retry ${attempt}/${MAX_RETRIES} after ${status}: ${snippet}`);
             setTimeout(() => makeUpstream(attempt + 1, body), RETRY_DELAY_MS * attempt);
           } else {
             const pt = new PassThrough();
