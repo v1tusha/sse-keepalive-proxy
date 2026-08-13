@@ -9,6 +9,13 @@
  * паузой, и Claude Code вообще не видит ошибку (нет "API error" и циклов
  * "Waiting for API response · will retry").
  *
+ * Ещё: фолбэк для POST /v1/messages/count_tokens. Шлюз этот endpoint обычно не
+ * реализует и отдаёт 404, а Claude Code дёргает его при валидации модели и читает
+ * из ответа input_tokens — на теле ошибки это падает как "Unable to validate
+ * model: undefined is not an object (evaluating 'z.usage.input_tokens')", и
+ * `/model <id>` перестаёт переключать модель. Прокси отвечает сам локальной
+ * оценкой (~4 символа на токен). Отключается COUNT_TOKENS_FALLBACK=0.
+ *
  * Запуск:
  *   node proxy.js
  *   PORT=9000 UPSTREAM=https://some-gateway.example IDLE_MS=3000 node proxy.js
@@ -38,6 +45,7 @@ const IDLE_MS = Number(process.env.IDLE_MS || 5000);
 const LOG_FILE = process.env.LOG_FILE || '';
 const MAX_RETRIES = Number(process.env.MAX_RETRIES || 3);
 const RETRY_DELAY_MS = Number(process.env.RETRY_DELAY_MS || 1500);
+const COUNT_TOKENS_FALLBACK = process.env.COUNT_TOKENS_FALLBACK !== '0';
 
 const upstream = new URL(UPSTREAM);
 const upRequester = upstream.protocol === 'https:' ? https.request : http.request;
@@ -72,6 +80,37 @@ function isTransientBody(status, buf) {
   return status >= 500 || status === 429 || status === 401 || status === 403;
 }
 
+const COUNT_TOKENS_PATH = '/v1/messages/count_tokens';
+
+function isCountTokens(method, reqPath) {
+  return method === 'POST' && reqPath.replace(/\?.*$/, '') === COUNT_TOKENS_PATH;
+}
+
+// Грубая оценка: ~4 символа на токен. Считаем system + текст сообщений + входы tool_use.
+// Точность не важна — Claude Code использует этот вызов как проверку «модель существует».
+function estimateTokens(body) {
+  try {
+    const r = JSON.parse(body.toString('utf8') || '{}');
+    const sys = typeof r.system === 'string'
+      ? r.system
+      : Array.isArray(r.system) ? r.system.map((b) => (b && b.text) || '').join('') : '';
+    let chars = sys.length;
+    for (const m of r.messages || []) {
+      if (typeof m.content === 'string') {
+        chars += m.content.length;
+      } else if (Array.isArray(m.content)) {
+        for (const b of m.content) {
+          chars += ((b && b.text) || '').length;
+          if (b && b.type === 'tool_use') chars += JSON.stringify(b.input || {}).length;
+        }
+      }
+    }
+    return Math.max(1, Math.ceil(chars / 4));
+  } catch (e) {
+    return 1;   // тело битое/пустое — лучше отдать 1, чем пробросить 404
+  }
+}
+
 const server = http.createServer((req, res) => {
   const reqPath = req.url;
   const started = Date.now();
@@ -81,6 +120,22 @@ const server = http.createServer((req, res) => {
   let aborted = false;
 
   log(`>> ${req.method} ${reqPath} start`);
+
+  // Шлюз обычно не реализует count_tokens и отдаёт 404 — Claude Code читает
+  // input_tokens с тела ошибки и падает на валидации модели. Отвечаем сами.
+  if (COUNT_TOKENS_FALLBACK && isCountTokens(req.method, reqPath)) {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      if (aborted) return;
+      const tokens = estimateTokens(Buffer.concat(chunks));
+      log(`${req.method} ${reqPath} -> 200 (local estimate ${tokens})`);
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ input_tokens: tokens }));
+    });
+    req.on('error', () => { aborted = true; if (!res.writableEnded) res.destroy(); });
+    return;
+  }
 
   const stopTimer = () => {
     if (sseTimer !== null) {

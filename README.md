@@ -17,6 +17,17 @@ The proxy fixes this two ways:
    "unauthorized client detected") are silently retried by the proxy with a
    backoff, so Claude Code never sees the error at all.
 
+It also answers one endpoint locally:
+
+3. **`count_tokens` fallback** — Claude Code validates a model by calling
+   `POST /v1/messages/count_tokens` and reading `input_tokens` off the reply.
+   Gateways that don't implement it answer `404` with an error body, so Claude Code
+   reads the field off an error object and dies with
+   `Unable to validate model: undefined is not an object (evaluating 'z.usage.input_tokens')`
+   — `/model <id>` then silently stops switching models. The proxy replies with a
+   local estimate (~4 chars/token) instead. Set `COUNT_TOKENS_FALLBACK=0` to disable
+   if your gateway implements the endpoint and you want its exact numbers.
+
 Request headers are relayed **verbatim** (gateways fingerprint the client via
 `user-agent`, `x-app`, `x-stainless-*`, `anthropic-version`, `anthropic-beta`,
 `authorization`); only `Host` is rewritten to the upstream host.
@@ -63,6 +74,7 @@ point it at `http://127.0.0.1:8787` if you want to route it through the proxy.
 | `IDLE_MS` | `5000` | Gateway silence threshold before keepalive injection |
 | `MAX_RETRIES` | `3` | Max attempts on transient gateway errors |
 | `RETRY_DELAY_MS` | `1500` | Base delay between retries |
+| `COUNT_TOKENS_FALLBACK` | `1` | Answer `count_tokens` locally; `0` = relay it to the gateway |
 | `LOG_FILE` | (empty) | Path to a log file (stderr is also mirrored there) |
 
 Example:
