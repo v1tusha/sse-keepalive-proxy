@@ -17,6 +17,17 @@
    «unauthorized client detected» или ложный «Invalid token») прокси тихо
    повторяет сам с паузой, и Claude Code вообще не видит ошибку.
 
+Плюс один endpoint прокси отвечает сам:
+
+3. **Фолбэк `count_tokens`** — Claude Code проверяет модель запросом
+   `POST /v1/messages/count_tokens` и читает из ответа `input_tokens`. Шлюзы,
+   которые этот endpoint не реализуют, отдают `404` с телом ошибки — Claude Code
+   читает поле у объекта ошибки и падает с
+   `Unable to validate model: undefined is not an object (evaluating 'z.usage.input_tokens')`,
+   после чего `/model <id>` молча перестаёт переключать модель. Прокси вместо
+   этого отдаёт локальную оценку (~4 символа на токен). Если твой шлюз endpoint
+   умеет и нужны его точные числа — `COUNT_TOKENS_FALLBACK=0`.
+
 Заголовки запросов релеются **без изменений** (шлюз фингерпринтит клиента:
 `user-agent`, `x-app`, `x-stainless-*`, `anthropic-version`, `anthropic-beta`,
 `authorization`); переписывается только `Host` на хост апстрима.
@@ -66,6 +77,7 @@ node proxy.js
 | `IDLE_MS` | `5000` | Порог молчания шлюза перед инжектом keepalive |
 | `MAX_RETRIES` | `3` | Максимум попыток при транзиентных ошибках шлюза |
 | `RETRY_DELAY_MS` | `1500` | Базовая пауза между ретраями |
+| `COUNT_TOKENS_FALLBACK` | `1` | Отвечать на `count_tokens` локально; `0` = релеить в шлюз |
 | `LOG_FILE` | (пусто) | Путь к файлу лога (stderr дублируется туда) |
 
 Пример:
