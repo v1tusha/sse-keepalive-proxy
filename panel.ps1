@@ -256,6 +256,9 @@ function Ensure-Proxy {
   $node = Get-Command node -ErrorAction SilentlyContinue
   if (-not $node) { return $false }
   $env:LOG_FILE = Join-Path $here 'proxy.log'
+  # PORT обязателен: без него node сядет на свой дефолт 8787, а панель осталась бы
+  # смотреть в порт из $Base — вечный ○STOPPED при живом прокси не на 8787.
+  $env:PORT = ([uri]$Base).Port
   Start-Process -FilePath $node.Source -ArgumentList 'proxy.js' -WorkingDirectory $here -WindowStyle Hidden | Out-Null
   for ($i = 0; $i -lt 20; $i++) { Start-Sleep -Milliseconds 400; if (Get-State) { return $true } }
   $false
