@@ -1,3 +1,14 @@
 *.log
 node_modules/
 .DS_Store
+
+# runtime state пультика
+config.json
+
+# служебное, не для репозитория
+.remember/
+monitor.txt
+WIFIHDMI/
+
+# мусор от playwright-mcp
+.playwright-mcp/
