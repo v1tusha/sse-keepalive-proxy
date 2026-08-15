@@ -5,10 +5,12 @@
  * A: шлюз молчит на первой попытке -> дубль выигрывает за ~HEDGE_MS, а не за таймаут.
  * B: транзиентный 500 «无可用渠道» -> следующая попытка проходит.
  * C: постоянная ошибка (нет прав) -> отдаём клиенту как есть, без повторов.
- * D: шлюз тупит дольше пре-коммита -> клиент получает keepalive'ы И живой SSE,
+ * D: шлюз тупит дольше пре-коммита -> клиент получает `event: ping` И живой SSE,
  *    а шлюз при этом обязан увидеть accept-encoding: identity.
  * E: шлюз всё же сжал тело -> клиент получает честную ошибку в потоке,
  *    а НЕ gzip-мусор под видом текста (это ломало прод 15.08.2026).
+ * F: шлюз замолчал ПОСРЕДИ события -> вставляем только комментарий, потому что
+ *    полное событие порвало бы чужое; поток остаётся разбираемым.
  */
 
 'use strict';
@@ -25,7 +27,9 @@ const UP_PORT = 8791;
 const PX_PORT = 8790;
 const HEDGE_MS = 1000;
 const PRE_COMMIT_MS = 1500;
-const SLOW_MS = 3000; // дольше пре-коммита: заставляем его сработать
+const IDLE_MS = 800;   // частый тик, чтобы ping/комментарий успели в тесте
+const SLOW_MS = 3000;  // дольше пре-коммита: заставляем его сработать
+const PARTIAL_MS = 2000; // пауза посреди события
 const HEAD_TIMEOUT_MS = 30000; // намеренно больше, чем ждём: победить должен хедж
 // Свой конфиг: иначе тестовый прокси прочитает и перепишет живой config.json.
 const TEST_CFG = path.join(os.tmpdir(), 'warp-proxy-test-config.json');
@@ -65,6 +69,13 @@ const upstream = http.createServer((req, res) => {
       return;
     }
     if (mode === 'slow') { setTimeout(sse, SLOW_MS); return; }
+    if (mode === 'partial') {
+      // Событие оборвано на середине: после data: идёт ОДИН \n, пустой строки нет.
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('event: message_start\ndata: {"type":"message_start"}\n');
+      setTimeout(() => { res.end('\nevent: message_stop\ndata: {"type":"message_stop"}\n\n'); }, PARTIAL_MS);
+      return;
+    }
     if (mode === 'gzip') {
       setTimeout(() => {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'content-encoding': 'gzip' });
@@ -122,6 +133,7 @@ async function waitProxy() {
       UPSTREAM: `http://127.0.0.1:${UP_PORT}`,
       HEDGE_MS: String(HEDGE_MS),
       PRE_COMMIT_MS: String(PRE_COMMIT_MS),
+      IDLE_MS: String(IDLE_MS),
       UPSTREAM_TIMEOUT_MS: String(HEAD_TIMEOUT_MS),
       MAX_ATTEMPTS: '3',
       RETRY_DELAY_MS: '100',
@@ -163,27 +175,46 @@ async function waitProxy() {
     assert.strictEqual(seen, 1, `C: повторять постоянную ошибку нельзя, попыток ${seen}`);
     console.log(`C ok: ${c.ms}ms, попыток к шлюзу ${seen}`);
 
-    // --- D: пре-коммит держит клиента живым и не портит поток ---
+    // --- D: пре-коммит держит клиента живым пингом и не портит поток ---
     mode = 'slow'; seen = 0; lastAcceptEncoding = null;
     const d = await ask();
     assert.strictEqual(d.status, 200, 'D: клиент получает 200');
-    assert.ok(d.body.includes(': keepalive'), 'D: пре-коммит должен был капнуть keepalive');
-    assert.ok(d.body.includes('message_stop'), 'D: и настоящий SSE поверх keepalive');
+    assert.ok(d.body.includes('event: ping'), 'D: пре-коммит должен был отдать event: ping');
+    assert.ok(d.body.includes('data: {"type":"ping"}\n\n'), 'D: ping — целое SSE-событие с пустой строкой на конце');
+    assert.ok(d.body.indexOf('event: ping') < d.body.indexOf('message_start'), 'D: ping приходит ДО первого события шлюза');
+    assert.ok(d.body.includes('message_stop'), 'D: и настоящий SSE поверх пинга');
     assert.ok(!d.body.includes('event: error'), 'D: ошибки быть не должно');
     assert.strictEqual(lastAcceptEncoding, 'identity',
       `D: шлюзу обязаны запретить сжатие, а пришло "${lastAcceptEncoding}"`);
     assert.ok(/pre-commit SSE/.test(plog), 'D: в логе должен быть пре-коммит');
-    console.log(`D ok: ${d.ms}ms, keepalive+SSE, шлюзу ушло accept-encoding: identity`);
+    console.log(`D ok: ${d.ms}ms, ping+SSE, шлюзу ушло accept-encoding: identity`);
 
     // --- E: шлюз сжал вопреки запрету -> честная ошибка, а не мусор ---
     mode = 'gzip'; seen = 0;
     const e = await ask();
     assert.strictEqual(e.status, 200, 'E: статус уже отдан пре-коммитом');
-    assert.ok(e.body.includes(': keepalive'), 'E: keepalive был');
+    assert.ok(e.body.includes('event: ping'), 'E: пинг был');
     assert.ok(e.body.includes('event: error'), 'E: должна прийти ошибка в потоке');
     assert.ok(/сжал поток/.test(e.body), 'E: ошибка должна называть причину (сжатие)');
     assert.ok(!e.body.includes('message_stop'), 'E: gzip-мусор в поток попасть не должен');
     console.log(`E ok: ${e.ms}ms, сжатый ответ отбит честной ошибкой`);
+
+    // --- F: пауза ПОСРЕДИ события -> только комментарий, событие не рвём ---
+    mode = 'partial'; seen = 0;
+    const f = await ask();
+    assert.strictEqual(f.status, 200, 'F: клиент получает 200');
+    assert.ok(f.body.includes('data: {"type":"message_start"}\n: keepalive\n'),
+      'F: в середину события вставлен комментарий сразу после data:');
+    assert.ok(!f.body.includes('event: ping'),
+      'F: полное событие внутрь чужого вставлять нельзя');
+    assert.ok(f.body.includes('message_stop'), 'F: событие доехало целым');
+    // Разбор глазами клиента: каждый блок событий отделён пустой строкой,
+    // комментарии игнорируются — message_start и message_stop должны найтись.
+    const types = f.body.split('\n\n').flatMap(b => b.split('\n')
+      .filter(l => l.startsWith('event: ')).map(l => l.slice(7)));
+    assert.deepStrictEqual(types, ['message_start', 'message_stop'],
+      `F: поток должен разбираться в два события, вышло ${JSON.stringify(types)}`);
+    console.log(`F ok: ${f.ms}ms, комментарий в середине события, поток разбираем`);
 
     console.log('\ntest-hedge OK');
   } catch (err) {

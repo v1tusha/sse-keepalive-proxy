@@ -144,7 +144,15 @@ const stats = {
   byModel: {},
 };
 
-const KEEPALIVE = ': keepalive\n\n';
+// Признак жизни на границе событий — НАСТОЯЩЕЕ событие Anthropic-стрима, а не
+// SSE-комментарий. Измерено 15.08.2026: пре-коммит отработал, ушли два
+// `: keepalive`, и клиент всё равно оборвал поток ровно на 18198ms — то есть
+// его watchdog считает только события, а строки-комментарии игнорирует. Именно
+// `event: ping` шлёт настоящий API (и именно его не пересылает шлюз — с этого
+// весь проект и начался), поэтому клиент обязан признавать его за жизнь.
+const PING = 'event: ping\ndata: {"type":"ping"}\n\n';
+// А вот ВНУТРИ события полное событие вставлять нельзя — порвём чужое. Там
+// единственное легальное — строка-комментарий.
 const KEEPALIVE_COMMENT = ': keepalive\n';
 
 function log(msg) {
@@ -318,18 +326,21 @@ const server = http.createServer((req, res) => {
     }
   };
 
-  // Инжект keepalive в тишину. Событие пополам не режем: если хвост не кончается
-  // пустой строкой, шлём комментарий без разделителя.
+  // Признак жизни в тишину. На границе событий (и до первого события) шлём
+  // полноценный `event: ping` — его watchdog клиента признаёт. Внутри события
+  // событие вставлять нельзя, там только комментарий: он watchdog не сбросит,
+  // но и поток не порвёт, а такая пауза — редкий случай (шлюз замолчал,
+  // не докончив событие).
   const tick = () => {
     sseTimer = null;
     if (res.writableEnded || res.destroyed) return;
     const t = tail.toString('utf8');
     if (t.length === 0 || t.endsWith('\n\n')) {
-      res.write(KEEPALIVE);
-      tail = Buffer.concat([tail, Buffer.from(KEEPALIVE)]).slice(-4);
+      res.write(PING);
+      tail = Buffer.concat([tail, Buffer.from(PING)]).slice(-4);
       keepalives += 1;
       stats.keepalives += 1;
-      log(`${req.method} ${reqPath} keepalive #${keepalives}`);
+      log(`${req.method} ${reqPath} ping #${keepalives}`);
     } else if (t.endsWith('\n')) {
       res.write(KEEPALIVE_COMMENT);
       tail = Buffer.concat([tail, Buffer.from(KEEPALIVE_COMMENT)]).slice(-4);

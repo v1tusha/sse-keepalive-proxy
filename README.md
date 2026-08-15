@@ -10,15 +10,19 @@ byte — measured) then kills the stream and retries in an endless loop
 
 The proxy fixes this four ways:
 
-1. **Keepalive injection** — when the gateway is silent for longer than `IDLE_MS`,
-   the proxy writes SSE comment lines (`: keepalive`) to the client, both between
-   events and mid-event, so the watchdog never fires.
+1. **Ping injection** — when the gateway is silent for longer than `IDLE_MS`, the
+   proxy sends the client a real `event: ping`, the same event the upstream API
+   emits during long pauses, so the client is built to accept it as a sign of
+   life. A complete event may only be written at an event boundary: if the
+   gateway stalled halfway through one, the proxy writes an SSE comment
+   (`: keepalive`) instead — the only line that is legal inside an unfinished
+   event, at the price of being a line the client is free to ignore.
 2. **Auto-retry** — transient gateway errors (401/403/429/5xx, e.g.
    "unauthorized client detected") are silently retried by the proxy with a
    backoff, so Claude Code never sees the error at all.
-3. **Pre-commit** — keepalive injection only works once the gateway has sent
+3. **Pre-commit** — ping injection only works once the gateway has sent
    response headers. If it hasn't within `PRE_COMMIT_MS`, the proxy sends the SSE
-   headers itself and starts injecting keepalives; retries continue behind them.
+   headers itself and starts injecting pings; retries continue behind them.
    Streaming requests go upstream with `accept-encoding: identity`, because the
    proxy's own headers declare no compression and a gzipped upstream body would
    reach the client as garbage.
@@ -137,7 +141,7 @@ curl -X POST http://127.0.0.1:8787/__config \
 |---|---|---|
 | `PORT` | `8787` | Proxy listen port |
 | `UPSTREAM` | `https://agentrouter.org` | Gateway URL |
-| `IDLE_MS` | `5000` | Gateway silence threshold before keepalive injection |
+| `IDLE_MS` | `5000` | Gateway silence threshold before a ping is injected |
 | `UPSTREAM_TIMEOUT_MS` | `90000` | How long to wait for response headers before aborting an attempt (`0` = forever) |
 | `PRE_COMMIT_MS` | `10000` | Silence before the proxy sends the SSE headers itself (`0` disables) |
 | `HEDGE_MS` | `20000` | Silence before a parallel duplicate is fired (`0` disables) |
@@ -166,7 +170,8 @@ model remap claude-haiku-4-5-x -> claude-opus-5     remap applied
 дублей оборвано: 1                                  winner found, losers aborted
 POST /v1/messages -> 200 (SSE) 21967ms              upstream responded
 pre-commit SSE (шлюз молчит 10016ms)                headers sent by the proxy
-POST /v1/messages keepalive #2                      keepalive injected
+POST /v1/messages ping #2                           event: ping injected
+keepalive mid-event #3                              comment: gateway stalled mid-event
 поток закрыт нормально: 12446b за 13840ms           stream finished
 КЛИЕНТ ЗАКРЫЛ соединение на 0b через 17833ms        client gave up before the first byte
 ШЛЮЗ ОБРЕЗАЛ поток на 4096b через 45000ms          upstream truncated the stream

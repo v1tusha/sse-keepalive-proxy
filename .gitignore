@@ -12,3 +12,6 @@ WIFIHDMI/
 
 # мусор от playwright-mcp
 .playwright-mcp/
+
+# lock планировщика
+.claude/
