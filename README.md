@@ -95,7 +95,7 @@ The knobs step through preset values rather than free arithmetic, so a slip
 can't set `hedgeMs` to something that floods the gateway.
 
 PowerShell 5.1 needs `panel.ps1` stored as UTF-8 **with BOM**, otherwise the box
-drawing and Cyrillic turn into mojibake. `panel.ps1 -SelfTest` checks the knob
+drawing and the arrows turn into mojibake. `panel.ps1 -SelfTest` checks the knob
 steps and the frame invariant (every row is exactly the frame width, so a long
 line can never wrap and make the frame scroll); `-Once` renders a single frame
 and exits. `PANEL_COLS` / `PANEL_ROWS` render at a size other than your window's.
@@ -177,23 +177,21 @@ PORT=9000 UPSTREAM=https://other-gateway.example IDLE_MS=3000 node proxy.js
 
 ## Reading the log
 
-Log messages are in Russian; glosses below.
-
 ```
->> POST /v1/messages start                          request received
-model remap claude-haiku-4-5-x -> claude-opus-5     remap applied
-попытка #1 отбита 500: ...无可用渠道...             transient error, attempt dropped
-хедж: тишина 20016ms, пускаю дубль #2               silence, duplicate fired
-дублей оборвано: 1                                  winner found, losers aborted
-POST /v1/messages -> 200 (SSE) 21967ms              upstream responded
-pre-commit SSE (шлюз молчит 10016ms)                headers sent by the proxy
-POST /v1/messages ping #2                           event: ping injected
-keepalive mid-event #3                              comment: gateway stalled mid-event
-поток закрыт нормально: 12446b за 13840ms           stream finished
-КЛИЕНТ ЗАКРЫЛ соединение на 0b через 17833ms        client gave up before the first byte
-ШЛЮЗ ОБРЕЗАЛ поток на 4096b через 45000ms          upstream truncated the stream
-все 2 попыток мимо: ...                             every attempt failed, 502 to the client
-client error: ECONNRESET                            connection-level failure
+>> POST /v1/messages start                             request received
+model remap claude-haiku-4-5-x -> claude-opus-5        remap applied
+attempt #1 bounced 500: ...无可用渠道...               transient error, attempt dropped
+hedge: 20016ms of silence, firing duplicate #2         silence, duplicate fired
+duplicates aborted: 1                                  winner found, losers aborted
+POST /v1/messages -> 200 (SSE) 21967ms                 upstream responded
+pre-commit SSE (gateway silent for 10016ms)            headers sent by the proxy
+POST /v1/messages ping #2                              event: ping injected
+keepalive mid-event #3                                 comment: gateway stalled mid-event
+stream closed normally: 12446b in 13840ms              stream finished
+CLIENT CLOSED the connection at 0b after 17833ms       client gave up before the first byte
+GATEWAY TRUNCATED the stream at 4096b after 45000ms    upstream truncated the stream
+all 2 attempts missed: ...                             every attempt failed, 502 to the client
+client error: ECONNRESET                               connection-level failure
 ```
 
 `count_tokens -> 404` is normal — many gateways don't implement that endpoint.

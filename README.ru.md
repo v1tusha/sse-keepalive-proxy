@@ -95,7 +95,7 @@ node test-hedge.js        # хедж и пре-коммит против фей�
 нажатием нельзя выставить `hedgeMs`, который завалит шлюз дублями.
 
 PowerShell 5.1 требует, чтобы `panel.ps1` лежал в UTF-8 **с BOM**, иначе
-псевдографика и кириллица превращаются в кракозябры. `panel.ps1 -SelfTest`
+псевдографика и стрелки превращаются в кракозябры. `panel.ps1 -SelfTest`
 проверяет шаги ручек и инвариант рамки (каждая строка ровно по ширине рамки,
 иначе длинная строка переносится и кадр уезжает вниз); `-Once` рисует один кадр
 и выходит. `PANEL_COLS` / `PANEL_ROWS` — отрисовать под размер, отличный от
@@ -180,21 +180,23 @@ PORT=9000 UPSTREAM=https://other-gateway.example IDLE_MS=3000 node proxy.js
 
 ## Чтение лога
 
+Сообщения лога — на английском.
+
 ```
->> POST /v1/messages start                       запрос получен
-model remap claude-haiku-4-5-x -> claude-opus-5  ремап применён
-попытка #1 отбита 500: ...无可用渠道...          транзиентная ошибка, попытка выбыла
-хедж: тишина 20016ms, пускаю дубль #2            тишина, пущен дубль
-дублей оборвано: 1                               победитель найден, лишние оборваны
-POST /v1/messages -> 200 (SSE) 21967ms           шлюз ответил
-pre-commit SSE (шлюз молчит 10016ms)             заголовки отдал прокси
-POST /v1/messages ping #2                        отдан event: ping
-keepalive mid-event #3                           комментарий: шлюз замолчал в середине события
-поток закрыт нормально: 12446b за 13840ms        поток дошёл до конца
-КЛИЕНТ ЗАКРЫЛ соединение на 0b через 17833ms     клиент сдался до первого байта
-ШЛЮЗ ОБРЕЗАЛ поток на 4096b через 45000ms       шлюз обрезал поток на полпути
-все 2 попыток мимо: ...                          все попытки провалились, клиенту 502
-client error: ECONNRESET                         обрыв на уровне соединения
+>> POST /v1/messages start                             запрос получен
+model remap claude-haiku-4-5-x -> claude-opus-5        ремап применён
+attempt #1 bounced 500: ...无可用渠道...               транзиентная ошибка, попытка выбыла
+hedge: 20016ms of silence, firing duplicate #2         тишина, пущен дубль
+duplicates aborted: 1                                  победитель найден, лишние оборваны
+POST /v1/messages -> 200 (SSE) 21967ms                 шлюз ответил
+pre-commit SSE (gateway silent for 10016ms)            заголовки отдал прокси
+POST /v1/messages ping #2                              отдан event: ping
+keepalive mid-event #3                                 комментарий: шлюз замолчал в середине события
+stream closed normally: 12446b in 13840ms              поток дошёл до конца
+CLIENT CLOSED the connection at 0b after 17833ms       клиент сдался до первого байта
+GATEWAY TRUNCATED the stream at 4096b after 45000ms    шлюз обрезал поток на полпути
+all 2 attempts missed: ...                             все попытки провалились, клиенту 502
+client error: ECONNRESET                               обрыв на уровне соединения
 ```
 
 `count_tokens -> 404` — это норма: многие шлюзы не реализуют этот endpoint.

@@ -22,7 +22,7 @@ $here    = $PSScriptRoot
 $HedgeSteps    = @(0, 8000, 12000, 20000, 30000)
 $PreSteps      = @(0, 6000, 10000, 15000, 25000)
 $AttemptSteps  = @(1, 2, 3, 4, 5)
-$KnobNames     = @('дубль', 'попыток', 'пре-коммит')
+$KnobNames     = @('hedge', 'attempts', 'pre-commit')
 
 # ---- VT: без ENABLE_VIRTUAL_TERMINAL_PROCESSING conhost не понимает ANSI ----
 Add-Type -Name VT -Namespace Win32 -MemberDefinition @'
@@ -88,10 +88,11 @@ function Fmt-Up($ms) {
   '{0:00}:{1:00}:{2:00}' -f [int]($t / 3600), [int](($t % 3600) / 60), ($t % 60)
 }
 
-# Порог в секундах, 0 = ручка выключена. Целые: все шаги кратны секунде, а
-# '{0:0.0}' на русской локали рисует «20,0с» — запятая тут только мешает.
+# Threshold in seconds, 0 = knob disabled. Integers: every step is a whole
+# second, and '{0:0.0}' on a Russian locale renders "20,0s" — the comma only gets
+# in the way here.
 function Fmt-S($ms) {
-  if ([int]$ms -le 0) { 'off' } else { [string][int]([int]$ms / 1000) + 'с' }
+  if ([int]$ms -le 0) { 'off' } else { [string][int]([int]$ms / 1000) + 's' }
 }
 
 # Ближайший к текущему значению шаг, затем сдвиг на $dir по списку (без заворота:
@@ -132,32 +133,32 @@ function Draw($st, $cur, $msg, $phase, $knob) {
   $seps = @()   # места, куда вставить отбивку, если высота позволит
   $top += Rule '╔' '╗'
   foreach ($r in $LOGO) { $top += Row ('  ' + $C.cyan + $r + $C.reset) }
-  $top += Row ('  ' + (& $k '↑↓') + ' цель   ' + (& $k 'SPACE') + ' 4-8⇄5   ' + (& $k 'ENTER') + ' применить   ' + (& $k 'R') + ' дефолт')
-  $top += Row ('  ' + (& $k 'TAB') + ' ручка   ' + (& $k '←→') + ' значение   ' + (& $k 'P') + ' вкл/выкл   ' + (& $k 'Q') + ' выход')
+  $top += Row ('  ' + (& $k '↑↓') + ' target   ' + (& $k 'SPACE') + ' 4-8⇄5   ' + (& $k 'ENTER') + ' apply   ' + (& $k 'R') + ' default')
+  $top += Row ('  ' + (& $k 'TAB') + ' knob   ' + (& $k '←→') + ' value   ' + (& $k 'P') + ' on/off   ' + (& $k 'Q') + ' quit')
   $top += Rule '╠' '╣'
 
-  $top += Row ($C.yel + '  СТАТУС' + $C.reset + '   ' + $(if ($up) { $C.grn + '●RUNNING' } else { $C.red + '○STOPPED' }) + $C.reset)
-  $top += Row ('   порт ' + $C.wht + ':' + ([uri]$Base).Port + $C.reset + '   ' + (Led $up 'LISTEN') + '    upstream ' + (Led $up 'OK'))
+  $top += Row ($C.yel + '  STATUS' + $C.reset + '   ' + $(if ($up) { $C.grn + '●RUNNING' } else { $C.red + '○STOPPED' }) + $C.reset)
+  $top += Row ('   port ' + $C.wht + ':' + ([uri]$Base).Port + $C.reset + '   ' + (Led $up 'LISTEN') + '    upstream ' + (Led $up 'OK'))
   if ($up) {
-    $top += Row ('   аптайм ' + $C.wht + (Fmt-Up $st.stats.uptimeMs) + $C.reset + $C.gray + '    ·    ' + $host_ + $C.reset)
+    $top += Row ('   uptime ' + $C.wht + (Fmt-Up $st.stats.uptimeMs) + $C.reset + $C.gray + '    ·    ' + $host_ + $C.reset)
   } else {
-    $top += Row ($C.red + '   прокси не запущен — нажми P' + $C.reset)
+    $top += Row ($C.red + '   proxy is not running — press P' + $C.reset)
   }
 
   $seps += $top.Count
-  $top += Row ($C.yel + '  РЕМАП' + $C.reset + '   ' + $C.gray + '*' + $match + '* ⇒ ?   (↑↓ выбор, Enter применить)' + $C.reset)
+  $top += Row ($C.yel + '  REMAP' + $C.reset + '   ' + $C.gray + '*' + $match + '* ⇒ ?   (↑↓ select, Enter apply)' + $C.reset)
   for ($i = 0; $i -lt $Targets.Count; $i++) {
     $t = $Targets[$i]
     $mark = if ($i -eq $cur) { $C.yel + '▸' + $C.reset } else { ' ' }
     $col  = if ($i -eq $cur) { $C.bold } else { $C.dim }
-    $label = if ($t -eq 'off') { 'off  (прозрачный прокси)' } else { $t }
-    $tail = if ($t -eq $active) { $C.grn + '  ◀ активна' + $C.reset } else { '' }
+    $label = if ($t -eq 'off') { 'off  (pass-through)' } else { $t }
+    $tail = if ($t -eq $active) { $C.grn + '  ◀ active' + $C.reset } else { '' }
     $top += Row ('   ' + $mark + ' ' + $col + $label + $C.reset + $tail)
   }
 
-  # ---- ручки хеджа: живые значения из cfg, выбранная помечена ▸, LED = вкл/выкл
+  # ---- hedge knobs: live values from cfg, selected one marked ▸, LED = on/off
   $seps += $top.Count
-  $top += Row ($C.yel + '  ХЕДЖ' + $C.reset + '   ' + $C.gray + 'дубль при тишине · пре-коммит' + $C.reset)
+  $top += Row ($C.yel + '  HEDGE' + $C.reset + '   ' + $C.gray + 'duplicate on silence · pre-commit' + $C.reset)
   if ($up) {
     $vals = @(
       (Fmt-S $st.cfg.hedgeMs),
@@ -178,14 +179,14 @@ function Draw($st, $cur, $msg, $phase, $knob) {
   }
 
   $seps += $top.Count
-  $top += Row ($C.yel + '  СТАТИСТИКА' + $C.reset)
+  $top += Row ($C.yel + '  STATS' + $C.reset)
   if ($up) {
     $s = $st.stats
     $parts = @()
     foreach ($p in $s.byModel.PSObject.Properties) { $parts += (($p.Name -replace '^claude-', '') + ' ·' + $p.Value) }
-    $top += Row ('   запросы ' + $C.wht + $s.requests + $C.reset + '   ремапы ' + $C.wht + $s.remaps + $C.reset + '   keepalive ' + $C.wht + $s.keepalives + $C.reset)
-    # Разбивка по моделям приклеена сюда, а не отдельной строкой: экономим высоту.
-    $top += Row ('   ретраи ' + $C.wht + $s.retries + $C.reset + '   хеджи ' + $C.wht + $s.hedges + $C.reset + '   ошибки ' + $(if ($s.errors -gt 0) { $C.red } else { $C.wht }) + $s.errors + $C.reset + '   ' + $C.gray + (($parts | Select-Object -First 3) -join '  ') + $C.reset)
+    $top += Row ('   requests ' + $C.wht + $s.requests + $C.reset + '   remaps ' + $C.wht + $s.remaps + $C.reset + '   keepalive ' + $C.wht + $s.keepalives + $C.reset)
+    # Per-model breakdown is glued onto this line rather than its own: saves height.
+    $top += Row ('   retries ' + $C.wht + $s.retries + $C.reset + '   hedges ' + $C.wht + $s.hedges + $C.reset + '   errors ' + $(if ($s.errors -gt 0) { $C.red } else { $C.wht }) + $s.errors + $C.reset + '   ' + $C.gray + (($parts | Select-Object -First 3) -join '  ') + $C.reset)
   } else {
     $top += Row ('   ' + $C.gray + '—' + $C.reset); $top += Row ''
   }
@@ -279,34 +280,35 @@ function Stop-Proxy {
 if ($SelfTest) {
   $fails = @()
   function Chk($name, $got, $want) {
-    if ("$got" -ne "$want") { $script:fails += "$name : получили $got, ждали $want" }
+    if ("$got" -ne "$want") { $script:fails += "$name : got $got, want $want" }
   }
-  Chk 'хедж 20с влево'      (Step-Value $HedgeSteps   20000 -1) 12000
-  Chk 'хедж 20с вправо'     (Step-Value $HedgeSteps   20000  1) 30000
-  Chk 'хедж на максимуме'   (Step-Value $HedgeSteps   30000  1) 30000   # без заворота в off
-  Chk 'хедж на off'         (Step-Value $HedgeSteps       0 -1)     0
-  Chk 'хедж из 9с (округл)' (Step-Value $HedgeSteps    9000  1) 12000   # ближайший 8с -> вправо
-  Chk 'попыток 2 вправо'    (Step-Value $AttemptSteps     2  1)     3
-  Chk 'попыток 1 влево'     (Step-Value $AttemptSteps     1 -1)     1
-  Chk 'пре-коммит 10с влево'(Step-Value $PreSteps     10000 -1)  6000
-  Chk 'формат 20000'        (Fmt-S 20000) '20с'
-  Chk 'формат off'          (Fmt-S 0) 'off'
+  Chk 'hedge 20s left'      (Step-Value $HedgeSteps   20000 -1) 12000
+  Chk 'hedge 20s right'     (Step-Value $HedgeSteps   20000  1) 30000
+  Chk 'hedge at max'        (Step-Value $HedgeSteps   30000  1) 30000   # no wrap into off
+  Chk 'hedge at off'        (Step-Value $HedgeSteps       0 -1)     0
+  Chk 'hedge from 9s (snap)'(Step-Value $HedgeSteps    9000  1) 12000   # nearest is 8s -> right
+  Chk 'attempts 2 right'    (Step-Value $AttemptSteps     2  1)     3
+  Chk 'attempts 1 left'     (Step-Value $AttemptSteps     1 -1)     1
+  Chk 'pre-commit 10s left' (Step-Value $PreSteps     10000 -1)  6000
+  Chk 'format 20000'        (Fmt-S 20000) '20s'
+  Chk 'format off'          (Fmt-S 0) 'off'
 
-  # Инвариант рамки: ЛЮБАЯ строка — ровно $W видимых символов плюс два борта.
-  # Нарушение = перенос в узком окне = кадр уезжает вниз и терминал сыпется
-  # (баг 15.08.2026: строка управления и заголовок ХЕДЖ были длиннее рамки).
+  # Frame invariant: ANY row is exactly $W visible characters plus two borders.
+  # A violation = wrap in a narrow window = the frame scrolls off and the terminal
+  # turns to mush (bug of 2026-08-15: the control row and the HEDGE header were
+  # wider than the frame).
   $script:W = 40
   $nasty = @(
-    'коротко',
+    'short',
     ('x' * 100),
-    ($C.yel + ('слово ' * 20) + $C.reset),
-    ($C.cyan + ('█' * 48) + $C.reset),                      # логотип шире рамки
-    ('  ' + $C.yel + '↑↓' + $C.reset + ' цель   ' + $C.yel + 'SPACE' + $C.reset + ' 4-8⇄5   ' + $C.yel + 'ENTER' + $C.reset + ' применить   ' + $C.yel + 'R' + $C.reset + ' дефолт'),
+    ($C.yel + ('word ' * 20) + $C.reset),
+    ($C.cyan + ('█' * 48) + $C.reset),                      # logo wider than the frame
+    ('  ' + $C.yel + '↑↓' + $C.reset + ' target   ' + $C.yel + 'SPACE' + $C.reset + ' 4-8⇄5   ' + $C.yel + 'ENTER' + $C.reset + ' apply   ' + $C.yel + 'R' + $C.reset + ' default'),
     ($C.gray + ('─' * 200) + $C.reset),
-    ($C.yel + 'a' + $C.reset) * 30                          # ANSI на каждом символе
+    ($C.yel + 'a' + $C.reset) * 30                          # ANSI on every character
   )
-  foreach ($n in $nasty) { Chk ('ширина строки из ' + (Vis $n) + ' симв.') (Vis (Row $n)) 42 }
-  Chk 'ширина Rule' (Vis (Rule '╔' '╗')) 42
+  foreach ($n in $nasty) { Chk ('row width from ' + (Vis $n) + ' chars') (Vis (Row $n)) 42 }
+  Chk 'Rule width' (Vis (Rule '╔' '╗')) 42
 
   if ($fails.Count) { $fails | ForEach-Object { "FAIL: $_" }; exit 1 }
   'panel selftest OK'
@@ -332,11 +334,11 @@ if ($Once) {
 
 [Console]::CursorVisible = $false
 [Console]::Write("$e[2J")
-Write-Host 'CLI PROXY :: старт, поднимаю прокси...'
+Write-Host 'CLI PROXY :: starting up, bringing the proxy online...'
 Ensure-Proxy | Out-Null
-$cur = 0; $phase = 0; $knob = 0; $msg = 'подключаюсь...'
+$cur = 0; $phase = 0; $knob = 0; $msg = 'connecting...'
 $st = Get-State
-if ($st) { $cur = [Math]::Max(0, [array]::IndexOf($Targets, [string]$st.cfg.remapModel)); $msg = 'на связи' }
+if ($st) { $cur = [Math]::Max(0, [array]::IndexOf($Targets, [string]$st.cfg.remapModel)); $msg = 'online' }
 $lastPoll = [Environment]::TickCount
 
 try {
@@ -354,46 +356,46 @@ try {
         'DownArrow' { $cur = ($cur + 1) % $Targets.Count }
         'Tab'       { $knob = ($knob + 1) % $KnobNames.Count }
         { $_ -in 'LeftArrow', 'RightArrow' } {
-          # Ручки применяются сразу: это runtime-конфиг, Enter тут не нужен.
+          # Knobs apply immediately: this is runtime config, no Enter needed here.
           $dir = if ($key.Key -eq 'RightArrow') { 1 } else { -1 }
           if (-not $st) {
-            $msg = 'прокси не отвечает'
+            $msg = 'proxy not responding'
           } else {
             switch ($knob) {
               0 { $v = Step-Value $HedgeSteps   $st.cfg.hedgeMs     $dir
-                  $msg = if (Set-Cfg @{ hedgeMs = $v })     { 'дубль при тишине: ' + (Fmt-S $v) } else { 'ошибка запроса к прокси' } }
+                  $msg = if (Set-Cfg @{ hedgeMs = $v })     { 'duplicate on silence: ' + (Fmt-S $v) } else { 'request to proxy failed' } }
               1 { $v = Step-Value $AttemptSteps $st.cfg.maxAttempts $dir
-                  $msg = if (Set-Cfg @{ maxAttempts = $v }) { "попыток на запрос: $v" } else { 'ошибка запроса к прокси' } }
+                  $msg = if (Set-Cfg @{ maxAttempts = $v }) { "attempts per request: $v" } else { 'request to proxy failed' } }
               2 { $v = Step-Value $PreSteps     $st.cfg.preCommitMs $dir
-                  $msg = if (Set-Cfg @{ preCommitMs = $v }) { 'пре-коммит: ' + (Fmt-S $v) } else { 'ошибка запроса к прокси' } }
+                  $msg = if (Set-Cfg @{ preCommitMs = $v }) { 'pre-commit: ' + (Fmt-S $v) } else { 'request to proxy failed' } }
             }
             $st = Get-State; $lastPoll = [Environment]::TickCount
           }
         }
         'Enter' {
           $m = $Targets[$cur]
-          $msg = if (Set-Target $m) { "применено: $m" } else { 'ошибка запроса к прокси' }
+          $msg = if (Set-Target $m) { "applied: $m" } else { 'request to proxy failed' }
           $st = Get-State; $lastPoll = [Environment]::TickCount
         }
         'Spacebar' {
-          # быстрый тумблер между двумя основными; из off/иного — на 4-8.
+          # quick toggle between the two main targets; from off/other — back to 4-8.
           $active = if ($st) { [string]$st.cfg.remapModel } else { '' }
           $next = if ($active -eq 'claude-opus-4-8') { 'claude-opus-5' } else { 'claude-opus-4-8' }
           $cur = [Math]::Max(0, [array]::IndexOf($Targets, $next))
-          $msg = if (Set-Target $next) { "свитч: $next" } else { 'ошибка запроса к прокси' }
+          $msg = if (Set-Target $next) { "switched: $next" } else { 'request to proxy failed' }
           $st = Get-State; $lastPoll = [Environment]::TickCount
         }
         'R' {
           $cur = 0
-          $msg = if (Set-Target $Targets[0]) { 'сброшено на дефолт: ' + $Targets[0] } else { 'ошибка запроса к прокси' }
+          $msg = if (Set-Target $Targets[0]) { 'reset to default: ' + $Targets[0] } else { 'request to proxy failed' }
           $st = Get-State; $lastPoll = [Environment]::TickCount
         }
         'P' {
           if (Get-State) {
-            $msg = if (Stop-Proxy) { 'прокси остановлен' } else { 'не нашёл процесс на порту' }
+            $msg = if (Stop-Proxy) { 'proxy stopped' } else { 'no process found on the port' }
           } else {
-            $msg = 'поднимаю прокси...'; Draw $st $cur $msg $phase $knob
-            $msg = if (Ensure-Proxy) { 'прокси запущен' } else { 'не смог поднять (node в PATH?)' }
+            $msg = 'starting the proxy...'; Draw $st $cur $msg $phase $knob
+            $msg = if (Ensure-Proxy) { 'proxy started' } else { 'could not start it (is node on PATH?)' }
           }
           $st = Get-State; $lastPoll = [Environment]::TickCount
         }

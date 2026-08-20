@@ -108,7 +108,7 @@ function loadConfig() {
   let raw;
   try { raw = fs.readFileSync(CONFIG_FILE, 'utf8'); } catch (e) { return; } // нет файла — идём на дефолтах
   let c;
-  try { c = JSON.parse(raw); } catch (e) { log(`config.json битый, игнорирую: ${e.message}`); return; }
+  try { c = JSON.parse(raw); } catch (e) { log(`config.json is malformed, ignoring: ${e.message}`); return; }
   if (typeof c.remapModel === 'string' && c.remapModel.trim()) cfg.remapModel = c.remapModel.trim();
   if (typeof c.remapMatch === 'string' && c.remapMatch.trim()) cfg.remapMatch = c.remapMatch.trim().toLowerCase();
   const h = patchNum(c.hedgeMs, 1000, 120000, true);
@@ -257,7 +257,7 @@ function applyPatch(p) {
     if (pc !== null) cfg.preCommitMs = pc;
   }
   saveConfig();
-  log(`config updated: remap ${remapOn() ? `*${cfg.remapMatch}* -> ${cfg.remapModel}` : 'off'}, хедж ${cfg.hedgeMs ? `${cfg.hedgeMs}ms` : 'off'} x${cfg.maxAttempts}, пре-коммит ${cfg.preCommitMs ? `${cfg.preCommitMs}ms` : 'off'}`);
+  log(`config updated: remap ${remapOn() ? `*${cfg.remapMatch}* -> ${cfg.remapModel}` : 'off'}, hedge ${cfg.hedgeMs ? `${cfg.hedgeMs}ms` : 'off'} x${cfg.maxAttempts}, pre-commit ${cfg.preCommitMs ? `${cfg.preCommitMs}ms` : 'off'}`);
 }
 
 function handlePanel(req, res, reqPath) {
@@ -360,7 +360,7 @@ const server = http.createServer((req, res) => {
     preTimer = null;
     if (committed || res.headersSent || res.writableEnded || aborted) return;
     committed = true;
-    log(`${req.method} ${reqPath} pre-commit SSE (шлюз молчит ${Date.now() - started}ms)`);
+    log(`${req.method} ${reqPath} pre-commit SSE (gateway silent for ${Date.now() - started}ms)`);
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache',
@@ -398,7 +398,7 @@ const server = http.createServer((req, res) => {
     });
     stream.on('end', () => {
       stopTimer();
-      log(`${req.method} ${reqPath} поток закрыт нормально: ${bytesOut}b за ${Date.now() - started}ms`);
+      log(`${req.method} ${reqPath} stream closed normally: ${bytesOut}b in ${Date.now() - started}ms`);
       res.end();
     });
     stream.on('error', (err) => {
@@ -406,9 +406,9 @@ const server = http.createServer((req, res) => {
       // Кто оборвал — принципиально: aborted=true значит ушёл клиент, а поток к
       // шлюзу оборвали мы сами. Иначе поток обрезал ШЛЮЗ на полпути.
       if (aborted) {
-        log(`${req.method} ${reqPath} поток к шлюзу оборван нами (клиент ушёл): ${bytesOut}b за ${Date.now() - started}ms`);
+        log(`${req.method} ${reqPath} upstream stream torn down by us (client left): ${bytesOut}b in ${Date.now() - started}ms`);
       } else {
-        log(`${req.method} ${reqPath} ШЛЮЗ ОБРЕЗАЛ поток на ${bytesOut}b через ${Date.now() - started}ms: ${err.message}`);
+        log(`${req.method} ${reqPath} GATEWAY TRUNCATED the stream at ${bytesOut}b after ${Date.now() - started}ms: ${err.message}`);
       }
       if (committed) {
         endWithSSEError(`upstream stream error: ${err.message}`);
@@ -433,8 +433,8 @@ const server = http.createServer((req, res) => {
       if (status < 200 || status >= 300 || !isSSE || compressed) {
         stream.resume(); // тело шлюза уже не пригодится
         endWithSSEError(compressed
-          ? `шлюз сжал поток (${enc}) вопреки accept-encoding: identity`
-          : `upstream ${status} после пре-коммита потока`);
+          ? `gateway compressed the stream (${enc}) despite accept-encoding: identity`
+          : `upstream ${status} after the stream was pre-committed`);
         return;
       }
       pipeSSE(stream);
@@ -470,7 +470,7 @@ const server = http.createServer((req, res) => {
     }
     inflight.clear();
     active = winner || null; // держим победителя, чтобы оборвать при уходе клиента
-    if (killed > 0) log(`${req.method} ${reqPath} дублей оборвано: ${killed}`);
+    if (killed > 0) log(`${req.method} ${reqPath} duplicates aborted: ${killed}`);
   };
 
   const giveUp = (why) => {
@@ -478,7 +478,7 @@ const server = http.createServer((req, res) => {
     settled = true;
     if (hedgeTimer !== null) { clearTimeout(hedgeTimer); hedgeTimer = null; }
     stats.errors += 1;
-    log(`${req.method} ${reqPath} все ${launched} попыток мимо: ${why}`);
+    log(`${req.method} ${reqPath} all ${launched} attempts missed: ${why}`);
     if (committed) {
       endWithSSEError(`upstream: ${why}`);
     } else if (!res.headersSent) {
@@ -510,7 +510,7 @@ const server = http.createServer((req, res) => {
       hedgeTimer = null;
       if (settled || aborted) return;
       stats.hedges += 1;
-      log(`${req.method} ${reqPath} хедж: тишина ${Date.now() - started}ms, пускаю дубль #${launched + 1}`);
+      log(`${req.method} ${reqPath} hedge: ${Date.now() - started}ms of silence, firing duplicate #${launched + 1}`);
       makeUpstream();
       scheduleHedge(); // и следующий, если и этот промолчит
     }, cfg.hedgeMs);
@@ -519,7 +519,7 @@ const server = http.createServer((req, res) => {
   function makeUpstream() {
     if (settled || aborted) return;
     if (launched >= cfg.maxAttempts) {
-      if (inflight.size === 0) giveUp('попытки исчерпаны');
+      if (inflight.size === 0) giveUp('attempts exhausted');
       return;
     }
     launched += 1;
@@ -556,7 +556,7 @@ const server = http.createServer((req, res) => {
             forward(status, upHeaders, pt);
             return;
           }
-          log(`${req.method} ${reqPath} попытка #${n} отбита ${status}: ${snippet}`);
+          log(`${req.method} ${reqPath} attempt #${n} bounced ${status}: ${snippet}`);
           attemptDone(upReq, `${status}`, RETRY_DELAY_MS);
         };
         upRes.on('data', (c) => { chunks.push(c); size += c.length; });
@@ -574,7 +574,7 @@ const server = http.createServer((req, res) => {
     if (UPSTREAM_TIMEOUT_MS > 0) {
       headTimer = setTimeout(() => {
         timedOut = true;
-        log(`${req.method} ${reqPath} попытка #${n}: тишина ${UPSTREAM_TIMEOUT_MS}ms, рву`);
+        log(`${req.method} ${reqPath} attempt #${n}: ${UPSTREAM_TIMEOUT_MS}ms of silence, tearing it down`);
         upReq.destroy(new Error('upstream head timeout'));
       }, UPSTREAM_TIMEOUT_MS);
     }
@@ -583,7 +583,7 @@ const server = http.createServer((req, res) => {
     upReq.on('error', (err) => {
       if (headTimer) { clearTimeout(headTimer); headTimer = null; }
       if (settled || aborted || res.destroyed) { inflight.delete(upReq); return; }
-      log(`${req.method} ${reqPath} попытка #${n} упала: ${err.message}${timedOut ? ' (таймаут)' : ''}`);
+      log(`${req.method} ${reqPath} attempt #${n} failed: ${err.message}${timedOut ? ' (timeout)' : ''}`);
       attemptDone(upReq, err.message, 0);
     });
     upReq.end(reqBody);
@@ -633,7 +633,7 @@ const server = http.createServer((req, res) => {
   res.on('error', abortAll);
   res.on('close', () => {
     if (!res.writableEnded) {
-      log(`${req.method} ${reqPath} КЛИЕНТ ЗАКРЫЛ соединение на ${bytesOut}b через ${Date.now() - started}ms`);
+      log(`${req.method} ${reqPath} CLIENT CLOSED the connection at ${bytesOut}b after ${Date.now() - started}ms`);
       abortAll();
     }
   });
@@ -651,61 +651,61 @@ if (process.argv[2] === 'selftest') {
   let savedCfg = null;
   try { savedCfg = fs.readFileSync(CONFIG_FILE, 'utf8'); } catch (e) { /* файла нет */ }
 
-  // ремап: haiku -> cfg.remapModel
+  // remap: haiku -> cfg.remapModel
   const h = remapModel(Buffer.from(JSON.stringify({ model: 'claude-haiku-4-5-20251001', messages: [] })));
-  assert.strictEqual(parse(h).model, cfg.remapModel, 'haiku должен ремапиться в cfg.remapModel');
-  // ремап: не-haiku не трогаем
+  assert.strictEqual(parse(h).model, cfg.remapModel, 'haiku must be remapped to cfg.remapModel');
+  // remap: leave non-haiku alone
   const o = Buffer.from(JSON.stringify({ model: 'claude-opus-4-8' }));
-  assert.strictEqual(remapModel(o).toString(), o.toString(), 'не-haiku без изменений');
-  // ремап: не-JSON не трогаем (возвращаем тот же буфер)
+  assert.strictEqual(remapModel(o).toString(), o.toString(), 'non-haiku unchanged');
+  // remap: leave non-JSON alone (same buffer back)
   const raw = Buffer.from('not json');
-  assert.strictEqual(remapModel(raw), raw, 'не-JSON без изменений');
-  // ремап off: даже haiku не трогаем
+  assert.strictEqual(remapModel(raw), raw, 'non-JSON unchanged');
+  // remap off: even haiku is left alone
   cfg.remapModel = 'off';
   const off = Buffer.from(JSON.stringify({ model: 'claude-haiku-4-5' }));
-  assert.strictEqual(remapModel(off).toString(), off.toString(), 'off = не трогаем');
+  assert.strictEqual(remapModel(off).toString(), off.toString(), 'off = leave it alone');
   cfg.remapModel = 'claude-opus-4-8';
-  // классификатор: китайский «нет доступа» — постоянная ошибка, НЕ ретраить
+  // classifier: Chinese "no access" is a permanent error, do NOT retry
   assert.strictEqual(
     isTransientBody(403, Buffer.from('{"error":{"message":"该令牌无权访问模型 claude-haiku-4-5"}}')),
-    false, 'zh 无权访问 = постоянная');
-  // классификатор: транзиентное всё ещё ретраим
-  assert.strictEqual(isTransientBody(403, Buffer.from('unauthorized client detected')), true, 'транзиентное ретраим');
-  assert.strictEqual(isTransientBody(429, Buffer.from('')), true, 'пустое тело ретраим');
+    false, 'zh 无权访问 = permanent');
+  // classifier: transient is still retried
+  assert.strictEqual(isTransientBody(403, Buffer.from('unauthorized client detected')), true, 'transient is retried');
+  assert.strictEqual(isTransientBody(429, Buffer.from('')), true, 'empty body is retried');
 
-  // publicState отдаёт цель ремапа и апстрим, без сюрпризов
+  // publicState reports the remap target and the upstream, no surprises
   const pub = publicState();
-  assert.strictEqual(pub.cfg.remapModel, 'claude-opus-4-8', 'publicState отдаёт remapModel');
-  assert.strictEqual(pub.upstream, UPSTREAM, 'publicState отдаёт upstream');
+  assert.strictEqual(pub.cfg.remapModel, 'claude-opus-4-8', 'publicState reports remapModel');
+  assert.strictEqual(pub.upstream, UPSTREAM, 'publicState reports upstream');
 
-  // applyPatch меняет цель ремапа и переживает round-trip через config.json
+  // applyPatch changes the remap target and survives a round-trip via config.json
   applyPatch({ remapModel: 'claude-opus-5' });
-  assert.strictEqual(cfg.remapModel, 'claude-opus-5', 'applyPatch сменил remapModel');
+  assert.strictEqual(cfg.remapModel, 'claude-opus-5', 'applyPatch changed remapModel');
   cfg.remapModel = 'claude-opus-4-8';
-  loadConfig(); // поднимаем то, что applyPatch записал в config.json
-  assert.strictEqual(cfg.remapModel, 'claude-opus-5', 'config.json пережил round-trip');
+  loadConfig(); // pick up what applyPatch wrote to config.json
+  assert.strictEqual(cfg.remapModel, 'claude-opus-5', 'config.json survived the round-trip');
   // applyPatch off
   applyPatch({ remapModel: 'off' });
-  assert.strictEqual(remapOn(), false, 'off выключает ремап');
+  assert.strictEqual(remapOn(), false, 'off disables the remap');
 
-  // wantsStream: пре-коммит заголовков имеет смысл только для стримовых запросов
-  assert.strictEqual(wantsStream({}, Buffer.from('{"model":"x","stream":true}')), true, 'stream:true = поток');
-  assert.strictEqual(wantsStream({}, Buffer.from('{"model":"x"}')), false, 'без stream = не поток');
-  assert.strictEqual(wantsStream({ accept: 'text/event-stream' }, Buffer.alloc(0)), true, 'accept SSE = поток');
-  assert.strictEqual(wantsStream({}, Buffer.from('not json')), false, 'не-JSON = не поток');
-  assert.strictEqual(wantsStream({}, Buffer.alloc(0)), false, 'пустое тело = не поток');
+  // wantsStream: pre-committing headers only makes sense for streaming requests
+  assert.strictEqual(wantsStream({}, Buffer.from('{"model":"x","stream":true}')), true, 'stream:true = stream');
+  assert.strictEqual(wantsStream({}, Buffer.from('{"model":"x"}')), false, 'no stream = not a stream');
+  assert.strictEqual(wantsStream({ accept: 'text/event-stream' }, Buffer.alloc(0)), true, 'accept SSE = stream');
+  assert.strictEqual(wantsStream({}, Buffer.from('not json')), false, 'non-JSON = not a stream');
+  assert.strictEqual(wantsStream({}, Buffer.alloc(0)), false, 'empty body = not a stream');
 
-  // Ручки хеджа на лету: применяются, мусор игнорируется, дурь зажимается.
+  // Live hedge knobs: applied, garbage ignored, silly values clamped.
   applyPatch({ hedgeMs: 7000, maxAttempts: 4 });
-  assert.strictEqual(cfg.hedgeMs, 7000, 'hedgeMs применился');
-  assert.strictEqual(cfg.maxAttempts, 4, 'maxAttempts применился');
-  applyPatch({ hedgeMs: 5, maxAttempts: 999 }); // опечатка -> лавина дублей, зажимаем
-  assert.strictEqual(cfg.hedgeMs, 1000, 'hedgeMs зажат по нижней границе');
-  assert.strictEqual(cfg.maxAttempts, 10, 'maxAttempts зажат по верхней границе');
-  applyPatch({ hedgeMs: 'нет' });
-  assert.strictEqual(cfg.hedgeMs, 1000, 'мусор в hedgeMs игнорируется');
+  assert.strictEqual(cfg.hedgeMs, 7000, 'hedgeMs applied');
+  assert.strictEqual(cfg.maxAttempts, 4, 'maxAttempts applied');
+  applyPatch({ hedgeMs: 5, maxAttempts: 999 }); // a typo -> a flood of duplicates, clamp it
+  assert.strictEqual(cfg.hedgeMs, 1000, 'hedgeMs clamped at the lower bound');
+  assert.strictEqual(cfg.maxAttempts, 10, 'maxAttempts clamped at the upper bound');
+  applyPatch({ hedgeMs: 'nope' });
+  assert.strictEqual(cfg.hedgeMs, 1000, 'garbage in hedgeMs is ignored');
   applyPatch({ hedgeMs: 0 });
-  assert.strictEqual(cfg.hedgeMs, 0, '0 выключает хедж');
+  assert.strictEqual(cfg.hedgeMs, 0, '0 disables the hedge');
 
   // ВОССТАНОВЛЕНИЕ — строго последним: любой applyPatch выше пишет в config.json,
   // и если восстановить раньше, прогон затрёт живую настройку панели.
@@ -738,8 +738,8 @@ server.on('clientError', (err, socket) => {
 });
 
 server.listen(PORT, '127.0.0.1', () => {
-  log(`listening on http://127.0.0.1:${PORT} -> ${UPSTREAM} (idle ${IDLE_MS}ms, таймаут заголовков ${UPSTREAM_TIMEOUT_MS}ms)`);
-  log(`хедж: ${cfg.hedgeMs ? `дубль каждые ${cfg.hedgeMs}ms тишины` : 'выключен'}, попыток на запрос ${cfg.maxAttempts}`);
+  log(`listening on http://127.0.0.1:${PORT} -> ${UPSTREAM} (idle ${IDLE_MS}ms, header timeout ${UPSTREAM_TIMEOUT_MS}ms)`);
+  log(`hedge: ${cfg.hedgeMs ? `duplicate every ${cfg.hedgeMs}ms of silence` : 'off'}, attempts per request ${cfg.maxAttempts}`);
   log(`remap: ${remapOn() ? `*${cfg.remapMatch}* -> ${cfg.remapModel}` : 'off'}`);
-  log(`пультик: запусти pult.bat`);
+  log(`panel: run panel.bat`);
 });
