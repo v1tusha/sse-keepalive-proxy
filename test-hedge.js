@@ -216,6 +216,23 @@ async function waitProxy() {
       `F: the stream must parse into two events, got ${JSON.stringify(types)}`);
     console.log(`F ok: ${f.ms}ms, comment mid-event, stream still parseable`);
 
+    // --- G: /__config mutates live config, so it must refuse browser-driven calls ---
+    const panel = (headers) => new Promise((resolve, reject) => {
+      const body = '{"remapModel":"claude-opus-5"}';
+      const r = http.request({ port: PX_PORT, method: 'POST', path: '/__config', headers }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      r.on('error', reject);
+      r.end(body);
+    });
+    // text/plain + Origin is a CORS "simple request": a page can send it without a preflight.
+    assert.strictEqual(await panel({ 'content-type': 'text/plain', origin: 'https://evil.example' }), 403,
+      'G: a cross-origin POST to /__config must be refused');
+    assert.strictEqual(await panel({ 'content-type': 'application/json' }), 200,
+      'G: the panel itself (no Origin) must still be served');
+    console.log('G ok: /__config refuses cross-origin, serves the panel');
+
     console.log('\ntest-hedge OK');
   } catch (err) {
     console.error(`\nFAILED: ${err.message}\n--- proxy log ---\n${plog}`);

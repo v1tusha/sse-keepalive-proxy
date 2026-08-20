@@ -36,7 +36,8 @@ The proxy fixes this four ways:
    event, at the price of being a line the client is free to ignore.
 2. **Auto-retry** — transient gateway errors (401/403/429/5xx, e.g.
    "unauthorized client detected") are silently retried by the proxy with a
-   backoff, so Claude Code never sees the error at all.
+   linear backoff (`RETRY_DELAY_MS`, then twice that, and so on), so Claude Code
+   never sees the error at all.
 3. **Pre-commit** — ping injection only works once the gateway has sent
    response headers. If it hasn't within `PRE_COMMIT_MS`, the proxy sends the SSE
    headers itself and starts injecting pings; retries continue behind them.
@@ -146,6 +147,12 @@ matter are runtime-patchable — see below.
 
 Patched values are clamped to sane ranges and persisted to `config.json`, which
 takes precedence over the environment on the next start.
+
+Both endpoints refuse any request that carries an `Origin` header. They mutate
+live config, and `/__config` parses a body of any content-type, which makes it a
+CORS "simple request" — without that check, any page open in your browser could
+POST to `127.0.0.1:8787` and flip your remap or set `hedgeMs` to a flood. The
+panel and `curl` send no `Origin`, so they are unaffected.
 
 ```
 curl -X POST http://127.0.0.1:8787/__config \

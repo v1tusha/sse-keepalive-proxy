@@ -261,6 +261,16 @@ function applyPatch(p) {
 }
 
 function handlePanel(req, res, reqPath) {
+  // The panel endpoints mutate live config, and /__config accepts any content-type,
+  // which makes it a CORS "simple request": any page the user has open could POST
+  // http://127.0.0.1:8787/__config with text/plain and silently flip the remap or
+  // set hedgeMs=1000 (a flood). Browsers always attach Origin to such a request;
+  // the panel and curl never do. So: no Origin, no service.
+  if (req.headers.origin) {
+    res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('cross-origin requests are not allowed\n');
+    return;
+  }
   if (req.method === 'GET' && reqPath === '/__state') {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     res.end(JSON.stringify(publicState()));
@@ -496,7 +506,10 @@ const server = http.createServer((req, res) => {
     if (settled || aborted) return;
     if (launched < cfg.maxAttempts) {
       stats.retries += 1;
-      setTimeout(makeUpstream, delayMs);
+      // Linear backoff: retry #2 after delayMs, #3 after 2x, and so on. A flat delay
+      // hammered the gateway three times inside 5s, and the error that actually
+      // dominates (503 无可用渠道 — no channel for the model) outlives that window.
+      setTimeout(makeUpstream, delayMs * launched);
       return;
     }
     if (inflight.size === 0) giveUp(why);
