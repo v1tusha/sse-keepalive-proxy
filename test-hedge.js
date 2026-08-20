@@ -30,6 +30,7 @@ const PRE_COMMIT_MS = 1500;
 const IDLE_MS = 800;   // частый тик, чтобы ping/комментарий успели в тесте
 const SLOW_MS = 3000;  // дольше пре-коммита: заставляем его сработать
 const PARTIAL_MS = 2000; // пауза посреди события
+const RETRY_DELAY_MS = 100; // our own retry delay — H checks retry-after beats it
 const HEAD_TIMEOUT_MS = 30000; // намеренно больше, чем ждём: победить должен хедж
 // Свой конфиг: иначе тестовый прокси прочитает и перепишет живой config.json.
 const TEST_CFG = path.join(os.tmpdir(), 'warp-proxy-test-config.json');
@@ -67,6 +68,14 @@ const upstream = http.createServer((req, res) => {
       res.writeHead(403, { 'content-type': 'application/json' });
       res.end('{"error":{"message":"该令牌无权访问模型 claude-opus-5"}}');
       return;
+    }
+    if (mode === 'ratelimit') {
+      if (n === 1) {
+        res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '1' });
+        res.end('{"error":{"message":"You have exceeded the request rate limit"}}');
+        return;
+      }
+      return sse();
     }
     if (mode === 'slow') { setTimeout(sse, SLOW_MS); return; }
     if (mode === 'partial') {
@@ -136,7 +145,7 @@ async function waitProxy() {
       IDLE_MS: String(IDLE_MS),
       UPSTREAM_TIMEOUT_MS: String(HEAD_TIMEOUT_MS),
       MAX_ATTEMPTS: '3',
-      RETRY_DELAY_MS: '100',
+      RETRY_DELAY_MS: String(RETRY_DELAY_MS),
       HAIKU_MODEL: 'off',
       CONFIG_FILE: TEST_CFG,
       LOG_FILE: '',
@@ -187,6 +196,9 @@ async function waitProxy() {
     assert.strictEqual(lastAcceptEncoding, 'identity',
       `D: the gateway must be denied compression, but got "${lastAcceptEncoding}"`);
     assert.ok(/pre-commit SSE/.test(plog), 'D: the log must mention the pre-commit');
+    await wait(50); // the close line is written as the client's end fires
+    assert.ok(/stream closed normally: \d+b \+\d+ keepalive/.test(plog),
+      'D: the close line must report keepalives apart from the gateway bytes');
     console.log(`D ok: ${d.ms}ms, ping+SSE, gateway received accept-encoding: identity`);
 
     // --- E: gateway compressed despite the ban -> honest error, not garbage ---
@@ -217,8 +229,7 @@ async function waitProxy() {
     console.log(`F ok: ${f.ms}ms, comment mid-event, stream still parseable`);
 
     // --- G: /__config mutates live config, so it must refuse browser-driven calls ---
-    const panel = (headers) => new Promise((resolve, reject) => {
-      const body = '{"remapModel":"claude-opus-5"}';
+    const panel = (headers, body = '{"remapModel":"claude-opus-5"}') => new Promise((resolve, reject) => {
       const r = http.request({ port: PX_PORT, method: 'POST', path: '/__config', headers }, (res) => {
         res.resume();
         res.on('end', () => resolve(res.statusCode));
@@ -232,6 +243,19 @@ async function waitProxy() {
     assert.strictEqual(await panel({ 'content-type': 'application/json' }), 200,
       'G: the panel itself (no Origin) must still be served');
     console.log('G ok: /__config refuses cross-origin, serves the panel');
+
+    // --- H: 429 with retry-after -> we wait what the gateway asked, not our own delay ---
+    // Hedging off first: otherwise the duplicate, not the retry, would be the reason
+    // a second attempt exists, and the timing below would prove nothing.
+    assert.strictEqual(await panel({ 'content-type': 'application/json' }, '{"hedgeMs":0}'), 200,
+      'H: hedging must be switchable off for this case');
+    mode = 'ratelimit'; seen = 0;
+    const h = await ask();
+    assert.strictEqual(h.status, 200, 'H: the retry after a 429 must go through');
+    assert.ok(seen >= 2, `H: there must be a retry, attempts ${seen}`);
+    assert.ok(h.ms >= 1000, `H: retry-after: 1 must be honoured, but the retry came after ${h.ms}ms`);
+    assert.ok(h.ms < 3000, `H: and it must not wait longer than asked; waited ${h.ms}ms`);
+    console.log(`H ok: ${h.ms}ms, waited out retry-after instead of our ${RETRY_DELAY_MS}ms`);
 
     console.log('\ntest-hedge OK');
   } catch (err) {

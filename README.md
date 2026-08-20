@@ -37,7 +37,8 @@ The proxy fixes this four ways:
 2. **Auto-retry** — transient gateway errors (401/403/429/5xx, e.g.
    "unauthorized client detected") are silently retried by the proxy with a
    linear backoff (`RETRY_DELAY_MS`, then twice that, and so on), so Claude Code
-   never sees the error at all.
+   never sees the error at all. When the gateway sends `retry-after`, that wins
+   over our own schedule (capped at 30s, so a gateway can't park a request).
 3. **Pre-commit** — ping injection only works once the gateway has sent
    response headers. If it hasn't within `PRE_COMMIT_MS`, the proxy sends the SSE
    headers itself and starts injecting pings; retries continue behind them.
@@ -170,7 +171,7 @@ curl -X POST http://127.0.0.1:8787/__config \
 | `PRE_COMMIT_MS` | `10000` | Silence before the proxy sends the SSE headers itself (`0` disables) |
 | `HEDGE_MS` | `20000` | Silence before a parallel duplicate is fired (`0` disables) |
 | `MAX_ATTEMPTS` | `2` | Total attempts per request — hedges and retries share this budget |
-| `RETRY_DELAY_MS` | `1500` | Delay before a retry after a transient error |
+| `RETRY_DELAY_MS` | `1500` | Base delay before a retry after a transient error; grows per attempt, and `retry-after` from the gateway overrides it |
 | `HAIKU_MODEL` | `claude-opus-4-8` | Target of the model remap (`off` disables) |
 | `HAIKU_MATCH` | `haiku` | Substring in the model name that triggers the remap |
 | `CONFIG_FILE` | `config.json` | Runtime config file written by the panel |
@@ -194,7 +195,7 @@ POST /v1/messages -> 200 (SSE) 21967ms                 upstream responded
 pre-commit SSE (gateway silent for 10016ms)            headers sent by the proxy
 POST /v1/messages ping #2                              event: ping injected
 keepalive mid-event #3                                 comment: gateway stalled mid-event
-stream closed normally: 12446b in 13840ms              stream finished
+stream closed normally: 12446b +2 keepalive in 13840ms   stream finished
 CLIENT CLOSED the connection at 0b after 17833ms       client gave up before the first byte
 GATEWAY TRUNCATED the stream at 4096b after 45000ms    upstream truncated the stream
 all 2 attempts missed: ...                             every attempt failed, 502 to the client

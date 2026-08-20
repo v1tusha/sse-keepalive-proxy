@@ -171,6 +171,18 @@ function shouldRetryStatus(status) {
   return status === 401 || status === 403 || status === 429 || (status >= 500 && status <= 599);
 }
 
+// A 429 usually carries retry-after; retrying on our own schedule on top of it is
+// how you stay rate-limited. Accepts both forms the header allows (seconds or an
+// HTTP-date) and caps the wait, so a gateway can't park a request indefinitely.
+function retryAfterMs(headers) {
+  const v = headers && headers['retry-after'];
+  if (!v) return null;
+  const secs = Number(v);
+  const ms = Number.isFinite(secs) ? secs * 1000 : Date.parse(v) - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return Math.min(ms, 30000);
+}
+
 const RETRY_NO = /authentication|api[ _-]?key|expired|billing|quota|permission|denied|bad request|missing|required|incorrect|not supported/i;
 // Постоянные ошибки New API на китайском (не ретраить): нет прав, неверный/
 // просроченный токен, недостаточно средств/квоты, модель/канал не существует.
@@ -323,6 +335,10 @@ const server = http.createServer((req, res) => {
   let bytesOut = 0;           // отдано клиенту — чтобы видеть, где обрезался поток
   let streaming = false;      // клиент просил SSE-поток
 
+  // Keepalives are reported apart from bytesOut on purpose: "0b" has to keep
+  // meaning "the gateway sent nothing", even when the client did get our pings.
+  const outSoFar = () => `${bytesOut}b${keepalives > 0 ? ` +${keepalives} keepalive` : ''}`;
+
   log(`>> ${req.method} ${reqPath} start`);
 
   const stopTimer = () => {
@@ -408,7 +424,7 @@ const server = http.createServer((req, res) => {
     });
     stream.on('end', () => {
       stopTimer();
-      log(`${req.method} ${reqPath} stream closed normally: ${bytesOut}b in ${Date.now() - started}ms`);
+      log(`${req.method} ${reqPath} stream closed normally: ${outSoFar()} in ${Date.now() - started}ms`);
       res.end();
     });
     stream.on('error', (err) => {
@@ -416,9 +432,9 @@ const server = http.createServer((req, res) => {
       // Кто оборвал — принципиально: aborted=true значит ушёл клиент, а поток к
       // шлюзу оборвали мы сами. Иначе поток обрезал ШЛЮЗ на полпути.
       if (aborted) {
-        log(`${req.method} ${reqPath} upstream stream torn down by us (client left): ${bytesOut}b in ${Date.now() - started}ms`);
+        log(`${req.method} ${reqPath} upstream stream torn down by us (client left): ${outSoFar()} in ${Date.now() - started}ms`);
       } else {
-        log(`${req.method} ${reqPath} GATEWAY TRUNCATED the stream at ${bytesOut}b after ${Date.now() - started}ms: ${err.message}`);
+        log(`${req.method} ${reqPath} GATEWAY TRUNCATED the stream at ${outSoFar()} after ${Date.now() - started}ms: ${err.message}`);
       }
       if (committed) {
         endWithSSEError(`upstream stream error: ${err.message}`);
@@ -499,17 +515,15 @@ const server = http.createServer((req, res) => {
     }
   };
 
-  // Попытка выбыла (таймаут, обрыв, транзиентный 5xx). Пускаем следующую, если
-  // не исчерпали потолок; если пускать нечего и в полёте никого — сдаёмся.
+  // An attempt dropped out (timeout, reset, transient 5xx). Launch the next one if
+  // the ceiling allows; if there is nothing left to launch and nothing in flight,
+  // give up. delayMs is the final wait — the caller decides whether it grows.
   const attemptDone = (r, why, delayMs) => {
     inflight.delete(r);
     if (settled || aborted) return;
     if (launched < cfg.maxAttempts) {
       stats.retries += 1;
-      // Linear backoff: retry #2 after delayMs, #3 after 2x, and so on. A flat delay
-      // hammered the gateway three times inside 5s, and the error that actually
-      // dominates (503 无可用渠道 — no channel for the model) outlives that window.
-      setTimeout(makeUpstream, delayMs * launched);
+      setTimeout(makeUpstream, delayMs);
       return;
     }
     if (inflight.size === 0) giveUp(why);
@@ -570,7 +584,11 @@ const server = http.createServer((req, res) => {
             return;
           }
           log(`${req.method} ${reqPath} attempt #${n} bounced ${status}: ${snippet}`);
-          attemptDone(upReq, `${status}`, RETRY_DELAY_MS);
+          // retry-after is an instruction, so it is used verbatim; our own delay is
+          // a linear backoff (flat retries hammered the gateway three times inside
+          // 5s, and the dominant 503 无可用渠道 outlives that window).
+          const after = retryAfterMs(upHeaders);
+          attemptDone(upReq, `${status}`, after !== null ? after : RETRY_DELAY_MS * launched);
         };
         upRes.on('data', (c) => { chunks.push(c); size += c.length; });
         upRes.on('end', decide);
@@ -646,7 +664,7 @@ const server = http.createServer((req, res) => {
   res.on('error', abortAll);
   res.on('close', () => {
     if (!res.writableEnded) {
-      log(`${req.method} ${reqPath} CLIENT CLOSED the connection at ${bytesOut}b after ${Date.now() - started}ms`);
+      log(`${req.method} ${reqPath} CLIENT CLOSED the connection at ${outSoFar()} after ${Date.now() - started}ms`);
       abortAll();
     }
   });
@@ -707,6 +725,18 @@ if (process.argv[2] === 'selftest') {
   assert.strictEqual(wantsStream({ accept: 'text/event-stream' }, Buffer.alloc(0)), true, 'accept SSE = stream');
   assert.strictEqual(wantsStream({}, Buffer.from('not json')), false, 'non-JSON = not a stream');
   assert.strictEqual(wantsStream({}, Buffer.alloc(0)), false, 'empty body = not a stream');
+
+  // retry-after is an instruction from the gateway, so it must survive both forms
+  // the header allows — and a bad or hostile value must not park the request.
+  assert.strictEqual(retryAfterMs({}), null, 'no retry-after = fall back to our own delay');
+  assert.strictEqual(retryAfterMs({ 'retry-after': '2' }), 2000, 'retry-after in seconds');
+  assert.strictEqual(retryAfterMs({ 'retry-after': '0' }), null, '0 = nothing to wait for');
+  assert.strictEqual(retryAfterMs({ 'retry-after': 'nonsense' }), null, 'garbage is ignored');
+  assert.strictEqual(retryAfterMs({ 'retry-after': '600' }), 30000, 'a long wait is capped at 30s');
+  const raDate = retryAfterMs({ 'retry-after': new Date(Date.now() + 5000).toUTCString() });
+  assert.ok(raDate > 3000 && raDate <= 5000, `retry-after as an HTTP-date, got ${raDate}`);
+  assert.strictEqual(retryAfterMs({ 'retry-after': new Date(Date.now() - 5000).toUTCString() }), null,
+    'a date in the past = no wait');
 
   // Live hedge knobs: applied, garbage ignored, silly values clamped.
   applyPatch({ hedgeMs: 7000, maxAttempts: 4 });
