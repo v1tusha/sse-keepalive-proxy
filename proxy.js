@@ -2,7 +2,7 @@
  * proxy.js — CLI proxy. SSE keepalive proxy между CLI-клиентом (Anthropic
  * Messages API) и Anthropic-совместимым шлюзом (agentrouter.org / New API).
  *
- * База — sse-keepalive-proxy. Добавлено под проблему haiku + консольный пультик:
+ * База — life-support. Добавлено под проблему haiku + консольный пультик:
  *
  *   1. Ремап модели. Клиент сам дёргает claude-haiku-4-5-* под фоновые задачи,
  *      а токен эту модель не пускает -> шлюз отдаёт 403 «该令牌无权访问模型».

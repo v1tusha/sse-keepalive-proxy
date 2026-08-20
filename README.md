@@ -1,6 +1,8 @@
 **English** | [Русский](README.ru.md)
 
-# sse-keepalive-proxy
+# life-support
+
+**Your gateway stops breathing. This breathes for it.**
 
 A local HTTP proxy between Claude Code and Anthropic-compatible gateways
 (e.g. agentrouter.org / New API) that do **not** forward `event: ping` during

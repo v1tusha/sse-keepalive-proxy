@@ -1,6 +1,8 @@
 [English](README.md) | **Русский**
 
-# sse-keepalive-proxy
+# life-support
+
+**Шлюз перестал дышать — прокси дышит за него.**
 
 Локальный HTTP-прокси между Claude Code и Anthropic-совместимыми шлюзами
 (например, agentrouter.org / New API), которые **не пересылают** `event: ping`

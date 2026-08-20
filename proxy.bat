@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0"
-title sse-keepalive-proxy
+title life-support
 set LOG_FILE=%~dp0proxy.log
 
 rem Модель, в которую ремапится haiku (должна быть доступна твоему токену).
