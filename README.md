@@ -1,5 +1,20 @@
 **English** | [Русский](README.ru.md)
 
+<div align="center">
+
+<a href="https://t.me/xgateonline_bot?start=github"><img src="docs/xgate-banner.png" alt="XGATE VPN — clean IP for sign-ups and APIs. Promo code ABUSEHUB — 3 days free"></a>
+
+[![XGATE VPN](https://img.shields.io/badge/XGATE_VPN-@xgateonline__bot-000000?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/xgateonline_bot?start=github)
+[![dashboard](https://img.shields.io/badge/dashboard-cabinet.xgate.online-000000?style=for-the-badge&logo=googlechrome&logoColor=white)](https://cabinet.xgate.online)
+[![promo code ABUSEHUB](https://img.shields.io/badge/promo_code-ABUSEHUB_·_3_days-37e29a?style=for-the-badge&labelColor=000000)](https://t.me/xgateonline_bot?start=github)
+
+<sub>This project is free and lives on <b>XGATE</b> subscriptions: own nodes, IP with no abuse history — gateways, APIs and sign-ups go through.<br>
+🤖 <a href="https://t.me/xgateonline_bot?start=github"><b>Telegram bot @xgateonline_bot</b></a> · 🔑 <a href="https://cabinet.xgate.online"><b>Dashboard cabinet.xgate.online</b></a> · promo code <code>ABUSEHUB</code> — 3 days free, then from 150 ₽/mo</sub>
+
+</div>
+
+<br>
+
 # life-support
 
 **Your gateway stops breathing. This breathes for it.**
